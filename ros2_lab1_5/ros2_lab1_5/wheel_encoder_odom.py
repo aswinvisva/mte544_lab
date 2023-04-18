@@ -11,9 +11,11 @@ from rclpy.qos import ReliabilityPolicy, QoSProfile
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
+import matplotlib.pyplot as plt
+
 WHEEL_RADIUS = 0.03575
 WHEEL_SEPARATION = 0.16
-TICK2RAD = 0.001533981
+TICK2RAD = 0.001533981 + 0.005
 
 def quaternion_from_yaw(yaw):
     cy = math.cos(yaw * 0.5)
@@ -31,7 +33,7 @@ def quaternion_from_yaw(yaw):
     return q
 
 def yaw_from_quaternion(q):
-    return atan2(q[1]*q[2] + q[0]*q[3], 0.5 - q[2]*q[2] - q[3]*q[3])
+    return atan2(2.0 * q[3]*q[2] + q[0]*q[1], 1.0 - 2.0 * q[1]*q[1] - q[2]*q[2])
 
 class WheelEncoderOdom(Node):
 
@@ -44,7 +46,7 @@ class WheelEncoderOdom(Node):
         self.use_imu = True
         
         self.robot_pose = [0, 0, 0]
-        self.gt_pose = [0, 0]
+        self.gt_pose = [0, 0, 0]
         self.last_tick = {
             "left": None,
             "right": None
@@ -78,13 +80,14 @@ class WheelEncoderOdom(Node):
 
     def imu_callback(self, msg):
         q = msg.orientation
-        q = [q.x, q.y, q.z, q.w]
+        q = [q.w, q.x, q.y, q.z]
         self.imu_yaw = yaw_from_quaternion(q)
 
     def odom_callback(self, msg):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
-        self.gt_pose = [x, y]
+        yaw = msg.twist.twist.angular.z
+        self.gt_pose = [x, y, yaw]
 
         if self.initialize_wheel_encoder_odom:
             self.robot_pose[0] = x
@@ -103,17 +106,15 @@ class WheelEncoderOdom(Node):
 
             delta_s = WHEEL_RADIUS * (wheel_r + wheel_l) / 2.0
 
-            if self.use_imu:
-                theta = self.imu_yaw
-                delta_theta = self.imu_yaw - self.robot_pose[2]
-            else:
-                delta_theta = WHEEL_RADIUS * (wheel_r - wheel_l) / WHEEL_SEPARATION
+            # if self.use_imu:
+            #     theta = self.imu_yaw
+            #     delta_theta = self.gt_pose[2] - self.robot_pose[2]
+            # else:
+            delta_theta = WHEEL_RADIUS * (wheel_r - wheel_l) / WHEEL_SEPARATION
 
             self.robot_pose[0] += delta_s * math.cos(self.robot_pose[2] + (delta_theta / 2.0))
             self.robot_pose[1] += delta_s * math.sin(self.robot_pose[2] + (delta_theta / 2.0))
             self.robot_pose[2] += delta_theta
-            self.robot_pose[2] += theta
-
 
             q = quaternion_from_yaw(self.robot_pose[2])
 
@@ -126,13 +127,18 @@ class WheelEncoderOdom(Node):
             pose.orientation.z = q[2]
             pose.orientation.w = q[3]
 
+            plt.plot(self.gt_pose[0], self.gt_pose[1], 'ro')
+            plt.plot(self.robot_pose[0], self.robot_pose[1], 'go')
+
+            plt.savefig('/home/aswin/trajectory.png')
+
             self.odom_publisher.publish(pose)
 
-            print(f"Wheel Encoder - x: {self.robot_pose[0]}, y: {self.robot_pose[1]}")
-            print(f"GT Odom - x: {self.gt_pose[0]}, y: {self.gt_pose[1]}")
+            print(f"Wheel Encoder - x: {self.robot_pose[0]}, y: {self.robot_pose[1]}, yaw: {math.degrees(self.robot_pose[2])}, delta yaw: {delta_theta}")
+            # print(f"GT Odom - x: {self.gt_pose[0]}, y: {self.gt_pose[1]}, yaw: {math.degrees(self.gt_pose[2])}")
 
             error = ((self.gt_pose[0] - self.robot_pose[0]) ** 2 + (self.gt_pose[1] - self.robot_pose[1]) ** 2) ** 0.5
-            print(f"Error: {error}")
+            # print(f"Error: {error}")
 
         self.last_message_ts = ts
         self.last_tick["left"] = current_wheel_l
@@ -140,7 +146,6 @@ class WheelEncoderOdom(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-
     wheel_encoder_odom = WheelEncoderOdom()
 
     rclpy.spin(wheel_encoder_odom)
