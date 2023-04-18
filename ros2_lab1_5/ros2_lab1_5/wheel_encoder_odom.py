@@ -9,6 +9,7 @@ from math import pow, atan2, sqrt
 from std_msgs.msg import String
 from rclpy.qos import ReliabilityPolicy, QoSProfile
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 
 WHEEL_RADIUS = 0.03575
 WHEEL_SEPARATION = 0.16
@@ -29,6 +30,9 @@ def quaternion_from_yaw(yaw):
     q[3] = sy * cp * cr - cy * sp * sr
     return q
 
+def yaw_from_quaternion(q):
+    return atan2(q[1]*q[2] + q[0]*q[3], 0.5 - q[2]*q[2] - q[3]*q[3])
+
 class WheelEncoderOdom(Node):
 
     def __init__(self):
@@ -36,6 +40,9 @@ class WheelEncoderOdom(Node):
 
         self.last_message_ts = None
         self.initialize_wheel_encoder_odom = True
+        self.imu_yaw = None
+        self.use_imu = True
+        
         self.robot_pose = [0, 0, 0]
         self.gt_pose = [0, 0]
         self.last_tick = {
@@ -47,6 +54,13 @@ class WheelEncoderOdom(Node):
             WheelTicks,
             '/wheel_ticks',
             self.listener_callback,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        )
+
+        self.imu_subscription = self.create_subscription(
+            Imu,
+            '/imu',
+            self.imu_callback,
             QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         )
 
@@ -62,6 +76,11 @@ class WheelEncoderOdom(Node):
             10
         )
 
+    def imu_callback(self, msg):
+        q = msg.orientation
+        q = [q.x, q.y, q.z, q.w]
+        self.imu_yaw = yaw_from_quaternion(q)
+
     def odom_callback(self, msg):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
@@ -76,18 +95,25 @@ class WheelEncoderOdom(Node):
         ts = msg.header.stamp.nanosec
         current_wheel_l = msg.ticks_left
         current_wheel_r = msg.ticks_right
-        if self.last_message_ts is not None:
+        if self.last_message_ts is not None and self.imu_yaw is not None:
             step_time = (ts - self.last_message_ts) * 1e-9
 
             wheel_l = TICK2RAD * (current_wheel_l - self.last_tick["left"])
             wheel_r = TICK2RAD * (current_wheel_r - self.last_tick["right"])
 
             delta_s = WHEEL_RADIUS * (wheel_r + wheel_l) / 2.0
-            delta_theta = WHEEL_RADIUS * (wheel_r - wheel_l) / WHEEL_SEPARATION
-            
+
+            if self.use_imu:
+                theta = self.imu_yaw
+                delta_theta = self.imu_yaw - self.robot_pose[2]
+            else:
+                delta_theta = WHEEL_RADIUS * (wheel_r - wheel_l) / WHEEL_SEPARATION
+
             self.robot_pose[0] += delta_s * math.cos(self.robot_pose[2] + (delta_theta / 2.0))
             self.robot_pose[1] += delta_s * math.sin(self.robot_pose[2] + (delta_theta / 2.0))
             self.robot_pose[2] += delta_theta
+            self.robot_pose[2] += theta
+
 
             q = quaternion_from_yaw(self.robot_pose[2])
 
